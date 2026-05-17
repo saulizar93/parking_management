@@ -1,0 +1,50 @@
+body {
+  margin: 0;
+  font-family: Arial;
+}
+
+.banner {
+  background-image:
+    linear-gradient(rgba(0, 0, 0, 0.4), rgba(0, 0, 0, 0.7)),
+    url("../images/banner_3.jpg");
+
+  background-repeat: repeat;
+  color: white;
+  padding: 20px;
+  text-align: center;
+}
+
+.container {
+  display: flex;
+  min-height: 80vh;
+}
+
+.sidebar {
+  width: 220px;
+  background: #333;
+  padding: 20px;
+}
+
+.sidebar a {
+  display: block;
+  color: white;
+  text-decoration: none;
+  margin-bottom: 15px;
+}
+
+.sidebar a:hover {
+  background: #555;
+  padding: 5px;
+}
+
+.main-content {
+  flex: 1;
+  padding: 20px;
+}
+
+footer {
+  background: #222;
+  color: white;
+  text-align: center;
+  padding: 15px;
+}
