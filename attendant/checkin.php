@@ -11,9 +11,19 @@ include("../includes/header.php");
 include("../includes/navbar.php");
 include("../db/connection.php");  
 
+function checkin_fee_preview(int $is_valet, int $car_wash): array {
+    $valet_fee   = $is_valet ? 10.00 : 0.00;
+    $carwash_fee = $car_wash ? 30.00 : 0.00;
+    $due_at_exit = $valet_fee + $carwash_fee;
+    return compact('valet_fee', 'carwash_fee', 'due_at_exit');
+}
+
 $slip      = null;
 $error     = '';
 $lot_full  = false;
+
+$current_hour = (int)date('G');
+$wash_allowed = ($current_hour >= 8 && $current_hour < 16);
 
 // Slot counts
 $result          = mysqli_query($conn, "SELECT COUNT(*) FROM ParkingSlot WHERE is_available = 1");
@@ -49,6 +59,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email        = mysqli_real_escape_string($conn, trim($_POST['email']         ?? ''));
     $plate_safe   = mysqli_real_escape_string($conn, $plate);
 
+    // New valet & car-wash flags
+    $is_valet     = isset($_POST['is_valet']) ? 1 : 0;
+
+    // Car wash only allowed between 8AM and 4PM
+    $current_hour = (int)date('G');
+    $wash_allowed = ($current_hour >= 8 && $current_hour < 16);
+    $car_wash     = ($is_valet && isset($_POST['car_wash']) && $wash_allowed) ? 1 : 0;
+    
+
     if (!$plate) {
         $error = 'A license plate number is required.';
     }
@@ -67,9 +86,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    if (!$error && $lot_full) {
+    // NEW: check Ground floor availability for valet
+    if (!$error && $is_valet) {
+        $ground_check = mysqli_query($conn, "
+            SELECT COUNT(*) FROM ParkingSlot s
+            JOIN Floor f ON s.floor_id = f.floor_id
+            WHERE f.floor_number = 1 AND s.is_available = 1
+        ");
+        if (mysqli_fetch_row($ground_check)[0] == 0) {
+            $error = 'No valet slots available on the Ground floor at this time.';
+        }
+    } elseif (!$error && $lot_full) {
         $error = 'The parking lot is currently full. No available slots.';
     }
+    
 
     if (!$error) {
 
@@ -88,29 +118,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $customer_id = mysqli_insert_id($conn);
         }
 
-        // Random available slot on any floor
-        $slot_result = mysqli_query($conn, "
-            SELECT s.slot_id,
-                   s.slot_number,
-                   s.slot_type,
-                   f.floor_number,
-                   f.section_name
-            FROM ParkingSlot s
-            JOIN Floor f ON s.floor_id = f.floor_id
-            WHERE s.is_available = 1
-            ORDER BY RAND()
-            LIMIT 1
-        ");
+        // NEW: valet to Ground floor only; regular to any floor
+        if ($is_valet) {
+            $slot_result = mysqli_query($conn, "
+                SELECT s.slot_id,
+                       s.slot_number,
+                       s.slot_type,
+                       f.floor_number,
+                       f.section_name
+                FROM ParkingSlot s
+                JOIN Floor f ON s.floor_id = f.floor_id
+                WHERE s.is_available = 1
+                  AND f.floor_number = 1
+                ORDER BY RAND()
+                LIMIT 1
+            ");
+        } else {
+            $slot_result = mysqli_query($conn, "
+                SELECT s.slot_id,
+                       s.slot_number,
+                       s.slot_type,
+                       f.floor_number,
+                       f.section_name
+                FROM ParkingSlot s
+                JOIN Floor f ON s.floor_id = f.floor_id
+                WHERE s.is_available = 1
+                ORDER BY RAND()
+                LIMIT 1
+            ");
+        }
+        
         $slot_row = mysqli_fetch_assoc($slot_result);
 
-        // Insert parking slip
-        // date_default_timezone_set('America/Los_Angeles');
         $entry_time = date('Y-m-d H:i:s');
 
+        // NEW: store is_valet and car_wash in ParkingSlip
         mysqli_query($conn, "
-            INSERT INTO ParkingSlip (customer_id, slot_id, entry_time, payment_status)
-            VALUES ($customer_id, {$slot_row['slot_id']}, '$entry_time', 'unpaid')
+            INSERT INTO ParkingSlip (customer_id, slot_id, entry_time, payment_status, is_valet, car_wash)
+            VALUES ($customer_id, {$slot_row['slot_id']}, '$entry_time', 'unpaid', $is_valet, $car_wash)
         ");
+        // ────────────────────────────────────────────────────────────────────
         $slip_id = mysqli_insert_id($conn);
 
         // Mark slot occupied
@@ -118,11 +165,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             "UPDATE ParkingSlot SET is_available = 0 WHERE slot_id = {$slot_row['slot_id']}"
         );
 
-        // Refresh count for the receipt
+        // Refresh counts
         $r               = mysqli_query($conn, "SELECT COUNT(*) FROM ParkingSlot WHERE is_available = 1");
         $available_count = mysqli_fetch_row($r)[0];
 
-        // Refresh per-floor counts
         $floor_result = mysqli_query($conn, "
             SELECT f.floor_number, f.section_name,
                 COUNT(s.slot_id) AS total,
@@ -143,6 +189,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'slot_number'  => $slot_row['slot_number'],
             'slot_type'    => $slot_row['slot_type'],
             'entry_time'   => $entry_time,
+            'is_valet'     => $is_valet,   // NEW
+            'car_wash'     => $car_wash,   // NEW
         ];
     }
 }
@@ -153,14 +201,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     <h2 class="mb-4">Check In Vehicle</h2>
 
-    <!-- <div class="alert <?= $lot_full ? 'alert-danger' : 'alert-info' ?> mb-4">
-        <?php if ($lot_full): ?>
-            <strong>Lot Full.</strong> There are no available slots at this time.
-        <?php else: ?>
-            <strong>Spaces Available:</strong>
-            <?= $available_count ?> of <?= $total_count ?> slots are currently open.
-        <?php endif; ?>
-    </div> -->
     <div class="alert <?= $lot_full ? 'alert-danger' : 'alert-info' ?> mb-4">
         <?php if ($lot_full): ?>
             <strong>Lot Full.</strong> There are no available slots at this time.
@@ -204,7 +244,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         <!-- Parking slip receipt -->
         <div class="card shadow p-4 mb-4" style="max-width: 480px; margin: 0 auto;">
-            <h4 class="text-center mb-3">🅿 Parking Slip Issued</h4>
+            <h4 class="text-center mb-3">
+                <?= $slip['is_valet'] ? '🔑 Valet Parking Slip Issued' : '🅿 Parking Slip Issued' ?>
+            </h4>
             <hr>
             <table class="table table-sm table-borderless mb-0">
                 <tbody>
@@ -220,6 +262,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <th>Vehicle Type</th>
                         <td><?= htmlspecialchars($slip['vehicle_type']) ?></td>
                     </tr>
+                    <!-- Valet badge row -->
+                    <?php if ($slip['is_valet']): ?>
+                        <tr>
+                            <th>Service</th>
+                            <td>
+                                <span class="badge bg-warning text-dark">⭐ Valet</span>
+                                <?php if ($slip['car_wash']): ?>
+                                    <span class="badge bg-info text-dark ms-1">🚿 Car Wash</span>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th>Fee Due at Exit</th>
+                            <td>
+                                <?php
+                                    $preview = checkin_fee_preview($slip['is_valet'], $slip['car_wash']);
+                                ?>
+                                <small class="text-muted d-block">Valet: $<?= number_format($preview['valet_fee'], 2) ?></small>
+                                <?php if ($slip['car_wash']): ?>
+                                    <small class="text-muted d-block">Car wash: $<?= number_format($preview['carwash_fee'], 2) ?></small>
+                                <?php endif; ?>
+                                <strong>+ hourly parking rate</strong>
+                            </td>
+                        </tr>
+                    <?php endif; ?>
                     <tr>
                         <th>Assigned Floor</th>
                         <td>
@@ -239,7 +306,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     </tr>
                     <tr>
                         <th>Rate</th>
-                        <td>$1.00 / hour (or part thereof)</td>
+                        <td>
+                            <?php if ($slip['is_valet']): ?>
+                                $5.00 / hour + $10.00 valet fee
+                                <?= $slip['car_wash'] ? '+ $30.00 car wash' : '' ?>
+                            <?php else: ?>
+                                $1.00 / hour (or part thereof)
+                            <?php endif; ?>
+                        </td>
                     </tr>
                 </tbody>
             </table>
@@ -304,6 +378,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <div class="form-text">Recorded automatically at the moment of submission.</div>
                 </div>
 
+                <!-- Valet / High-End section  -->
+                <hr>
+                <h5 class="mb-3">Premium Services</h5>
+
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input"
+                           type="checkbox"
+                           role="switch"
+                           name="is_valet"
+                           id="valetToggle"
+                           <?= isset($_POST['is_valet']) ? 'checked' : '' ?>>
+                    <label class="form-check-label fw-semibold" for="valetToggle">
+                        ⭐ Valet / High-End Vehicle
+                        <span class="text-muted fw-normal" style="font-size: .85rem;">
+                            — reserves a Ground-level slot &amp; adds a $10 valet fee
+                        </span>
+                    </label>
+                </div>
+
+                <!-- Car-wash sub-option — hidden unless valet is checked -->
+                <div id="valetOptions" class="ms-4 mb-3" style="display: <?= isset($_POST['is_valet']) ? 'block' : 'none' ?>;">
+                    <?php if ($wash_allowed): ?>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" name="car_wash"
+                                id="carWashCheck" <?= isset($_POST['car_wash']) ? 'checked' : '' ?>>
+                            <label class="form-check-label" for="carWashCheck">
+                                🚿 Request Car Wash
+                                <span class="text-muted" style="font-size: .85rem;">— +$30.00</span>
+                            </label>
+                        </div>
+                    <?php else: ?>
+                        <div class="text-muted" style="font-size: .9rem;">
+                            🚫 Car wash unavailable — only offered between <strong>8:00 AM – 4:00 PM</strong>.
+                        </div>
+                    <?php endif; ?>
+                </div>
+                
+
                 <hr>
                 <h5 class="mb-3">
                     Customer Information
@@ -342,10 +454,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </div>
 
 <script>
+    // Plate auto-uppercase
     const plateInput = document.querySelector('input[name="vehicle_plate"]');
     if (plateInput) {
         plateInput.addEventListener('input', function() {
             this.value = this.value.toUpperCase();
+        });
+    }
+
+    // Show/hide car-wash option based on valet toggle
+    const valetToggle  = document.getElementById('valetToggle');
+    const valetOptions = document.getElementById('valetOptions');
+    const carWashCheck = document.getElementById('carWashCheck');
+
+    if (valetToggle) {
+        valetToggle.addEventListener('change', function () {
+            valetOptions.style.display = this.checked ? 'block' : 'none';
+            if (!this.checked) carWashCheck.checked = false;
         });
     }
 </script>

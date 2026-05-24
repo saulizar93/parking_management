@@ -2,7 +2,7 @@
 
         <footer>
             <p>Developer: Ojeda, Saul</p>
-            <a href="mailto:your_email@email.com">
+            <a href="mailto:s.ojeda7799@student.nu.edu">
                 Send Feedback
             </a>
         </footer>

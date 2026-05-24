@@ -30,6 +30,11 @@
        Check Out Vehicle
     </a>
 
+    <a class="btn btn-outline-light w-100 mb-2"
+        href="/parking_management/attendant/training.php">
+        Training
+    </a>
+
     <?php if($_SESSION['role'] == 'admin'): ?>
 
         <a class="btn btn-outline-light w-100 mb-2"
